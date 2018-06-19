@@ -38,6 +38,7 @@ import static org.mockito.Mockito.verify;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -89,6 +90,7 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -122,6 +124,9 @@ public class DcTrackerTest extends TelephonyTest {
             1 << (TelephonyManager.NETWORK_TYPE_LTE - 1);
     private static final int NETWORK_TYPE_EHRPD_BITMASK =
             1 << (TelephonyManager.NETWORK_TYPE_EHRPD - 1);
+    private static final Uri PREFERAPN_URI = Uri.parse(
+            Telephony.Carriers.CONTENT_URI + "/preferapn");
+
 
     @Mock
     ISub mIsub;
@@ -181,6 +186,7 @@ public class DcTrackerTest extends TelephonyTest {
     }
 
     private class ApnSettingContentProvider extends MockContentProvider {
+        private int mPreferredApnSet = 0;
 
         @Override
         public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
@@ -225,7 +231,8 @@ public class DcTrackerTest extends TelephonyTest {
                                     Telephony.Carriers.MAX_CONNS_TIME, Telephony.Carriers.MTU,
                                     Telephony.Carriers.MVNO_TYPE,
                                     Telephony.Carriers.MVNO_MATCH_DATA,
-                                    Telephony.Carriers.NETWORK_TYPE_BITMASK});
+                                    Telephony.Carriers.NETWORK_TYPE_BITMASK,
+                                    Telephony.Carriers.APN_SET_ID});
 
                     mc.addRow(new Object[]{
                             2163,                   // id
@@ -254,7 +261,8 @@ public class DcTrackerTest extends TelephonyTest {
                             0,                      // mtu
                             "",                     // mvno_type
                             "",                     // mnvo_match_data
-                            NETWORK_TYPE_LTE_BITMASK // network_type_bitmask
+                            NETWORK_TYPE_LTE_BITMASK, // network_type_bitmask
+                            0                       // apn_set_id
                     });
 
                     mc.addRow(new Object[]{
@@ -284,7 +292,8 @@ public class DcTrackerTest extends TelephonyTest {
                             0,                      // mtu
                             "",                     // mvno_type
                             "",                     // mnvo_match_data
-                            NETWORK_TYPE_LTE_BITMASK // network_type_bitmask
+                            NETWORK_TYPE_LTE_BITMASK, // network_type_bitmask
+                            0                       // apn_set_id
                     });
 
                     mc.addRow(new Object[]{
@@ -314,7 +323,8 @@ public class DcTrackerTest extends TelephonyTest {
                             0,                      // mtu
                             "",                     // mvno_type
                             "",                     // mnvo_match_data
-                            0                       // network_type_bitmask
+                            0,                      // network_type_bitmask
+                            0                       // apn_set_id
                     });
 
                     mc.addRow(new Object[]{
@@ -344,7 +354,8 @@ public class DcTrackerTest extends TelephonyTest {
                             0,                      // mtu
                             "",                     // mvno_type
                             "",                     // mnvo_match_data
-                            NETWORK_TYPE_EHRPD_BITMASK // network_type_bitmask
+                            NETWORK_TYPE_EHRPD_BITMASK, // network_type_bitmask
+                            0                       // apn_set_id
                     });
 
                     mc.addRow(new Object[]{
@@ -374,13 +385,29 @@ public class DcTrackerTest extends TelephonyTest {
                             0,                      // mtu
                             "",                     // mvno_type
                             "",                     // mnvo_match_data
-                            0                       // network_type_bitmask
+                            0,                      // network_type_bitmask
+                            0                       // apn_set_id
                     });
+
                     return mc;
                 }
+            } else if (uri.isPathPrefixMatch(
+                    Uri.withAppendedPath(Telephony.Carriers.CONTENT_URI, "preferapnset"))) {
+                MatrixCursor mc = new MatrixCursor(
+                        new String[]{Telephony.Carriers.APN_SET_ID});
+                // apn_set_id is the only field used with this URL
+                mc.addRow(new Object[]{ mPreferredApnSet });
+                mc.addRow(new Object[]{ 0 });
+                return mc;
             }
 
             return null;
+        }
+
+        @Override
+        public int update(Uri url, ContentValues values, String where, String[] whereArgs) {
+            mPreferredApnSet = values.getAsInteger(Telephony.Carriers.APN_SET_ID);
+            return 1;
         }
     }
 
@@ -389,11 +416,13 @@ public class DcTrackerTest extends TelephonyTest {
         logd("DcTrackerTest +Setup!");
         super.setUp(getClass().getSimpleName());
 
+        doReturn(mSimRecords).when(mPhone).getIccRecords();
         doReturn("fake.action_detached").when(mPhone).getActionDetached();
         doReturn("fake.action_attached").when(mPhone).getActionAttached();
         doReturn(ServiceState.RIL_RADIO_TECHNOLOGY_LTE).when(mServiceState)
                 .getRilDataRadioTechnology();
         doReturn("44010").when(mSimRecords).getOperatorNumeric();
+        doReturn("44010").when(mPhone).getOperatorNumeric();
 
         mContextFixture.putStringArrayResource(com.android.internal.R.array.networkAttributes,
                 sNetworkAttributes);
@@ -416,6 +445,7 @@ public class DcTrackerTest extends TelephonyTest {
         ((MockContentResolver) mContext.getContentResolver()).addProvider(
                 Telephony.Carriers.CONTENT_URI.getAuthority(), mApnSettingContentProvider);
 
+        doReturn(true).when(mSubscriptionManager).isActiveSubId(anyInt());
         doReturn(true).when(mSimRecords).getRecordsLoaded();
         doReturn(PhoneConstants.State.IDLE).when(mCT).getState();
         doReturn(true).when(mSST).getDesiredPowerState();
@@ -542,6 +572,7 @@ public class DcTrackerTest extends TelephonyTest {
     @MediumTest
     public void testDataSetup() throws Exception {
 
+        doReturn(true).when(mSubscriptionManager).isActiveSubId(anyInt());
         mDct.setUserDataEnabled(true);
 
         mSimulatedCommands.setDataCallResult(true, createSetupDataCallResult());
@@ -1293,7 +1324,7 @@ public class DcTrackerTest extends TelephonyTest {
         assertEquals(DctConstants.State.CONNECTED, mDct.getOverallState());
     }
 
-// Test for fetchDunApn()
+    // Test for fetchDunApns()
     @Test
     @SmallTest
     public void testFetchDunApn() {
@@ -1308,15 +1339,48 @@ public class DcTrackerTest extends TelephonyTest {
         Settings.Global.putString(mContext.getContentResolver(),
                 Settings.Global.TETHER_DUN_APN, dunApnString);
         // should return APN from Setting
-        ApnSetting dunApn = mDct.fetchDunApn();
+        ApnSetting dunApn = mDct.fetchDunApns().get(0);
         assertTrue(dunApnExpected.equals(dunApn));
 
         Settings.Global.putString(mContext.getContentResolver(),
                 Settings.Global.TETHER_DUN_APN, null);
         // should return APN from db
-        dunApn = mDct.fetchDunApn();
+        dunApn = mDct.fetchDunApns().get(0);
         assertEquals(FAKE_APN5, dunApn.apn);
     }
+
+    // Test for fetchDunApns() with apn set id
+    @Test
+    @SmallTest
+    public void testFetchDunApnWithPreferredApnSet() {
+        logd("Sending EVENT_RECORDS_LOADED");
+        mDct.sendMessage(mDct.obtainMessage(DctConstants.EVENT_RECORDS_LOADED, null));
+        waitForMs(200);
+
+        // apnSetId=1
+        String dunApnString1 = "[ApnSettingV5]HOT mobile PC,pc.hotm,,,,,,,,,440,10,,DUN,,,true,"
+                + "0,,,,,,,,,,1";
+        // apnSetId=0
+        String dunApnString2 = "[ApnSettingV5]HOT mobile PC,pc.coldm,,,,,,,,,440,10,,DUN,,,true,"
+                + "0,,,,,,,,,,0";
+
+        ApnSetting dunApnExpected = ApnSetting.fromString(dunApnString1);
+
+        ContentResolver cr = mContext.getContentResolver();
+        Settings.Global.putString(cr, Settings.Global.TETHER_DUN_APN,
+                dunApnString1 + ";" + dunApnString2);
+
+        // set that we prefer apn set 1
+        ContentValues values = new ContentValues();
+        values.put(Telephony.Carriers.APN_SET_ID, 1);
+        cr.update(PREFERAPN_URI, values, null, null);
+
+        // return APN from Setting with apnSetId=1
+        ArrayList<ApnSetting> dunApns = mDct.sortApnListByPreferred(mDct.fetchDunApns());
+        assertEquals(2, dunApns.size());
+        assertTrue(dunApnExpected.equals(dunApns.get(0)));
+    }
+
     // Test oos
     @Test
     @SmallTest
